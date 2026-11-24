@@ -25,6 +25,28 @@ export default function RegisterStudentPage() {
   const [photoCount, setPhotoCount] = useState(0);
   const [statusMsg, setStatusMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
   const [capturing, setCapturing] = useState(false);
+  const [students, setStudents] = useState<any[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [selectedRoll, setSelectedRoll] = useState("");
+
+  // Load already-registered students so photos can also be captured for them.
+  // Previously capture only unlocked for a student created in the same page
+  // session, so after a refresh (or if the student already existed) the Capture
+  // button stayed locked forever even though the student was saved.
+  const loadStudents = () =>
+    apiFetch("/students").then((list) => setStudents(Array.isArray(list) ? list : [])).catch(() => undefined);
+
+  useEffect(() => { loadStudents(); }, []);
+
+  const unlockForStudent = (student: any) => {
+    setRegisteredRoll(student.roll_number);
+    setPhotoCount(student.photo_count || 0);
+    setStatusMsg({
+      type: "ok",
+      text: `Capture unlocked for ${student.name} (${student.roll_number}). ${student.photo_count || 0}/10 samples already saved - capture the remaining angles below.`,
+    });
+  };
 
   useEffect(() => {
     navigator.mediaDevices?.getUserMedia({ video: { width: 640, height: 480 } })
@@ -50,7 +72,19 @@ export default function RegisterStudentPage() {
       setRegisteredRoll(student.roll_number);
       setPhotoCount(student.photo_count || 0);
       setStatusMsg({ type: "ok", text: `Profile created for ${student.name}. Capture at least 10 face angles below.` });
+      loadStudents();
     } catch (err: any) {
+      // If this student is already registered, unlock capture for the existing
+      // record instead of leaving the Capture button locked.
+      if ((err.message || "").toLowerCase().includes("already exists")) {
+        try {
+          const list = await apiFetch("/students");
+          const existing = (Array.isArray(list) ? list : []).find(
+            (st: any) => st.roll_number === form.roll_number || st.email === form.email
+          );
+          if (existing) { unlockForStudent(existing); return; }
+        } catch { /* fall through to the original error message */ }
+      }
       setStatusMsg({ type: "err", text: err.message });
     }
   };
@@ -82,6 +116,47 @@ export default function RegisterStudentPage() {
     } finally {
       setCapturing(false);
     }
+  };
+
+  // Upload existing photos from the computer as dataset samples. Uses the
+  // SAME /dataset/capture endpoint and the SAME backend face validation as
+  // webcam capture (exactly 1 clear face required) - no separate logic.
+  const uploadPhotos = async (files: FileList | null) => {
+    if (!registeredRoll || !files || files.length === 0) return;
+    setUploading(true);
+    setStatusMsg(null);
+    let savedCount = 0;
+    let lastReason: string | null = null;
+    let latestCount = photoCount;
+    for (const file of Array.from(files)) {
+      try {
+        const base64: string = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(new Error("Could not read the selected file."));
+          reader.readAsDataURL(file);
+        });
+        const res = await apiFetch("/dataset/capture", {
+          method: "POST",
+          body: JSON.stringify({ roll_number: registeredRoll, image_base64: base64 }),
+        });
+        if (res.saved) { savedCount++; latestCount = res.photo_count; }
+        else { lastReason = res.reason; }
+      } catch (err: any) {
+        lastReason = err.message;
+      }
+    }
+    setPhotoCount(latestCount);
+    loadStudents();
+    if (savedCount > 0 && !lastReason) {
+      setStatusMsg({ type: "ok", text: `${savedCount} photo(s) uploaded & saved. Total: ${latestCount}/10.` });
+    } else if (savedCount > 0) {
+      setStatusMsg({ type: "ok", text: `${savedCount} photo(s) saved (total ${latestCount}/10). Some were rejected: ${lastReason}` });
+    } else {
+      setStatusMsg({ type: "err", text: lastReason || "No photo could be saved. Use a clear photo with exactly one face." });
+    }
+    setUploading(false);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   return (
@@ -132,6 +207,29 @@ export default function RegisterStudentPage() {
           <button type="submit" className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-sm font-semibold transition">
             Save Student & Unlock Camera Capture
           </button>
+
+          <div className="flex items-center gap-3 text-xs text-slate-400">
+            <span className="flex-1 border-t border-slate-200" /> or <span className="flex-1 border-t border-slate-200" />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Already registered? Add photos for an existing student</label>
+            <div className="flex gap-2">
+              <select value={selectedRoll} onChange={(e) => setSelectedRoll(e.target.value)}
+                className="flex-1 px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white">
+                <option value="">Select a student...</option>
+                {students.map((st) => (
+                  <option key={st.id} value={st.roll_number}>{st.roll_number} - {st.name} ({st.photo_count || 0}/10 photos)</option>
+                ))}
+              </select>
+              <button type="button"
+                disabled={!selectedRoll}
+                onClick={() => { const st = students.find((x) => x.roll_number === selectedRoll); if (st) unlockForStudent(st); }}
+                className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white rounded-xl text-sm font-semibold transition">
+                Unlock Capture
+              </button>
+            </div>
+          </div>
         </form>
 
         <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
@@ -164,6 +262,20 @@ export default function RegisterStudentPage() {
           >
             {capturing ? "Validating Face Geometry..." : "Capture Face Sample"}
           </button>
+
+          <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden"
+            onChange={(e) => uploadPhotos(e.target.files)} />
+          <button
+            type="button"
+            disabled={!registeredRoll || uploading || capturing}
+            onClick={() => fileInputRef.current?.click()}
+            className="w-full py-2.5 bg-white hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-400 border border-indigo-600 text-indigo-700 rounded-xl text-sm font-semibold transition"
+          >
+            {uploading ? "Uploading & Validating..." : "Upload Photo from Computer"}
+          </button>
+          <p className="text-xs text-slate-400 text-center">
+            Upload clear photos with exactly one face - you can select multiple photos at once. They are validated and saved the same way as webcam captures.
+          </p>
         </div>
       </div>
     </div>

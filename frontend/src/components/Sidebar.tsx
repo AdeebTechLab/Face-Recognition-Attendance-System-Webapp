@@ -4,7 +4,7 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, UserPlus, Users, FolderKanban, Cpu,
-  ScanFace, History, BarChart3, FileSpreadsheet, Settings
+  ScanFace, History, BarChart3, Settings
 } from "lucide-react";
 
 const NAV_ITEMS = [
@@ -16,7 +16,6 @@ const NAV_ITEMS = [
   { href: "/training", label: "Model Training", icon: Cpu },
   { href: "/attendance", label: "Attendance History", icon: History },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
-  { href: "/reports", label: "Reports & Exports", icon: FileSpreadsheet },
   { href: "/settings", label: "Settings & Logs", icon: Settings },
 ];
 

@@ -15,6 +15,7 @@ from schemas import StudentCreate, StudentUpdate, FrameCaptureRequest, TrainRequ
 from security import get_api_key
 from vision_engine import validate_and_save_capture, train_encodings_model, recognize_faces_in_frame, DATASET_DIR
 from pdf_generator import build_attendance_pdf
+from excel_generator import build_attendance_excel
 
 Base.metadata.create_all(bind=engine)
 
@@ -307,34 +308,100 @@ def get_daily_report(target_date: Optional[str] = None, db: Session = Depends(ge
         "weekly_trend": trend
     }
 
+def _build_export_rows(db: Session, target_date: Optional[str] = None, search: Optional[str] = None):
+    """Rows for the Attendance History download, built only from real stored data.
+
+    Columns, in order: Serial Number, Name, Roll Number, Date, Present, Absent, Leave.
+
+    Status follows the project's existing rule (same as the daily report):
+    a stored check-in record for that date means Present, and an active
+    student with no record for that date is Absent. The system stores no
+    Leave records, so the Leave column is left blank rather than inventing
+    values. With no target_date, one roster is produced for every date that
+    has attendance records (or today if there are none yet).
+    """
+    students_query = db.query(Student).filter(Student.is_active == True)
+    if search:
+        like_term = f"%{search}%"
+        students_query = students_query.filter(
+            (Student.name.ilike(like_term)) | (Student.roll_number.ilike(like_term))
+        )
+    students = students_query.order_by(Student.roll_number.asc()).all()
+
+    if target_date:
+        dates = [_parse_date(target_date)]
+    else:
+        dates = sorted(
+            {r[0] for r in db.query(AttendanceRecord.attendance_date).distinct().all()}
+        )
+        if not dates:
+            dates = [date.today()]
+
+    rows = []
+    serial = 1
+    for d in dates:
+        present_rolls = {
+            r.roll_number
+            for r in db.query(AttendanceRecord).filter(AttendanceRecord.attendance_date == d).all()
+        }
+        for s in students:
+            is_present = s.roll_number in present_rolls
+            rows.append({
+                "serial": serial,
+                "name": s.name,
+                "roll_number": s.roll_number,
+                "date": d.isoformat(),
+                "present": "Present" if is_present else "",
+                "absent": "" if is_present else "Absent",
+                "leave": "",  # No Leave records exist in the stored data; never fabricated.
+            })
+            serial += 1
+    return rows
+
+
 @app.get("/api/attendance/export", dependencies=[Depends(get_api_key)])
 def export_attendance(
     target_date: Optional[str] = None,
-    format: Literal["csv", "pdf"] = Query("csv"),
+    search: Optional[str] = None,
+    format: Literal["xlsx", "pdf", "csv"] = Query("xlsx"),
     db: Session = Depends(get_db)
 ):
-    report = get_daily_report(target_date=target_date, db=db)
-    if format == "csv":
+    """Attendance History download (Excel / PDF / CSV) with the columns:
+    Serial Number, Name, Roll Number, Date, Present, Absent, Leave."""
+    rows = _build_export_rows(db, target_date=target_date, search=search)
+    label = target_date if target_date else "history"
+    headers = ["Serial Number", "Name", "Roll Number", "Date", "Present", "Absent", "Leave"]
+
+    if format == "xlsx":
+        excel_bytes = build_attendance_excel(rows)
+        return Response(
+            content=excel_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename=attendance_{label}.xlsx"}
+        )
+    elif format == "pdf":
+        summary = {
+            "total_records": len(rows),
+            "present_count": sum(1 for r in rows if r["present"]),
+            "absent_count": sum(1 for r in rows if r["absent"]),
+        }
+        pdf_bytes = build_attendance_pdf(label, summary, rows)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=attendance_{label}.pdf"}
+        )
+    else:
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["Roll Number", "Student Name", "Department", "Date", "Status", "Check-In Time", "Face Distance"])
-        for row in report["roster"]:
-            writer.writerow([
-                row["roll_number"], row["student_name"], row["department"],
-                report["date"], row["status"], row["check_in_time"], row["face_distance"]
-            ])
+        writer.writerow(headers)
+        for r in rows:
+            writer.writerow([r["serial"], r["name"], r["roll_number"], r["date"], r["present"], r["absent"], r["leave"]])
         output.seek(0)
         return StreamingResponse(
             iter([output.getvalue()]),
             media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename=attendance_{report['date']}.csv"}
-        )
-    else:
-        pdf_bytes = build_attendance_pdf(report["date"], report, report["roster"])
-        return Response(
-            content=pdf_bytes,
-            media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename=attendance_{report['date']}.pdf"}
+            headers={"Content-Disposition": f"attachment; filename=attendance_{label}.csv"}
         )
 
 @app.get("/api/system/logs", dependencies=[Depends(get_api_key)])
