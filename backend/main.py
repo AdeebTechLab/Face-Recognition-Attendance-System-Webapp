@@ -11,11 +11,12 @@ from sqlalchemy.exc import IntegrityError
 
 from database import Base, engine, get_db
 from models import Student, AttendanceRecord, ModelVersion, SystemLog
-from schemas import StudentCreate, StudentUpdate, FrameCaptureRequest, TrainRequest, RecognizeRequest
+from schemas import StudentCreate, StudentUpdate, FrameCaptureRequest, TrainRequest, RecognizeRequest, LeaveRequest
 from security import get_api_key
 from vision_engine import validate_and_save_capture, train_encodings_model, recognize_faces_in_frame, DATASET_DIR
-from pdf_generator import build_attendance_pdf
-from excel_generator import build_attendance_excel
+from pdf_generator import build_attendance_pdf, build_monthly_register_pdf
+from excel_generator import build_attendance_excel, build_monthly_register_excel
+from monthly_register import build_monthly_register, is_leave, LEAVE_SOURCE
 
 Base.metadata.create_all(bind=engine)
 
@@ -202,8 +203,16 @@ def recognize_frame(payload: RecognizeRequest, db: Session = Depends(get_db)):
                 log_event(db, "INFO", "ATTENDANCE", det["message"])
             except IntegrityError:
                 db.rollback()
-                det["attendance_event"] = "ALREADY_MARKED"
-                det["message"] = f"Already marked today: {student.name} ({student.roll_number})"
+                existing = db.query(AttendanceRecord).filter(
+                    AttendanceRecord.roll_number == student.roll_number,
+                    AttendanceRecord.attendance_date == today
+                ).first()
+                if existing and is_leave(existing):
+                    det["attendance_event"] = "ON_LEAVE"
+                    det["message"] = f"On leave today: {student.name} ({student.roll_number})"
+                else:
+                    det["attendance_event"] = "ALREADY_MARKED"
+                    det["message"] = f"Already marked today: {student.name} ({student.roll_number})"
         else:
             det["attendance_event"] = "IGNORED_UNKNOWN"
 
@@ -260,41 +269,53 @@ def get_daily_report(target_date: Optional[str] = None, db: Session = Depends(ge
     active_students = db.query(Student).filter(Student.is_active == True).order_by(Student.roll_number).all()
     active_rolls = {s.roll_number for s in active_students}
     # Only active students count: deactivated students' history must not inflate today's totals
-    present_records = [
+    day_records = [
         r for r in db.query(AttendanceRecord).filter(AttendanceRecord.attendance_date == report_date).all()
         if r.roll_number in active_rolls
     ]
-    present_map = {r.roll_number: r for r in present_records}
+    record_map = {r.roll_number: r for r in day_records}
+    present_records = [r for r in day_records if not is_leave(r)]
+    leave_records = [r for r in day_records if is_leave(r)]
 
     roster = []
     for s in active_students:
-        rec = present_map.get(s.roll_number)
+        rec = record_map.get(s.roll_number)
+        if rec and is_leave(rec):
+            status = "Leave"
+        elif rec:
+            status = "Present"
+        else:
+            status = "Absent"
         roster.append({
             "roll_number": s.roll_number,
             "student_name": s.name,
             "department": s.department,
-            "status": "Present" if rec else "Absent",
-            "check_in_time": rec.check_in_time if rec else "—",
-            "face_distance": rec.face_distance if rec else "—"
+            "status": status,
+            "check_in_time": rec.check_in_time if rec and not is_leave(rec) else "—",
+            "face_distance": rec.face_distance if rec and not is_leave(rec) else "—"
         })
 
     total = len(active_students)
     present_count = len(present_records)
-    absent_count = max(0, total - present_count)
+    leave_count = len(leave_records)
+    absent_count = max(0, total - present_count - leave_count)
     pct = round((present_count / total) * 100.0, 1) if total > 0 else 0.0
 
     # Weekly trend (last 7 days)
     trend = []
     for offset in range(6, -1, -1):
         d = report_date - timedelta(days=offset)
-        cnt = db.query(AttendanceRecord).filter(
+        day_recs = db.query(AttendanceRecord).filter(
             AttendanceRecord.attendance_date == d,
             AttendanceRecord.roll_number.in_(active_rolls) if active_rolls else False,
-        ).count()
+        ).all()
+        cnt = sum(1 for r in day_recs if not is_leave(r))
+        leave_cnt = sum(1 for r in day_recs if is_leave(r))
         trend.append({
             "date": d.strftime("%b %d"),
             "present": cnt,
-            "absent": max(0, total - cnt),
+            "leave": leave_cnt,
+            "absent": max(0, total - cnt - leave_cnt),
             "rate": round((cnt / total) * 100.0, 1) if total > 0 else 0.0
         })
 
@@ -302,6 +323,7 @@ def get_daily_report(target_date: Optional[str] = None, db: Session = Depends(ge
         "date": report_date.isoformat(),
         "total_students": total,
         "present_count": present_count,
+        "leave_count": leave_count,
         "absent_count": absent_count,
         "attendance_percentage": pct,
         "roster": roster,
@@ -314,11 +336,12 @@ def _build_export_rows(db: Session, target_date: Optional[str] = None, search: O
     Columns, in order: Serial Number, Name, Roll Number, Date, Present, Absent, Leave.
 
     Status follows the project's existing rule (same as the daily report):
-    a stored check-in record for that date means Present, and an active
-    student with no record for that date is Absent. The system stores no
-    Leave records, so the Leave column is left blank rather than inventing
-    values. With no target_date, one roster is produced for every date that
-    has attendance records (or today if there are none yet).
+    a stored check-in record for that date means Present, a stored Leave
+    record (verification_source "LEAVE", created from the Mark Leave option
+    in Attendance History) fills the Leave column, and an active student
+    with no record for that date is Absent. With no target_date, one roster
+    is produced for every date that has attendance records (or today if
+    there are none yet).
     """
     students_query = db.query(Student).filter(Student.is_active == True)
     if search:
@@ -340,20 +363,22 @@ def _build_export_rows(db: Session, target_date: Optional[str] = None, search: O
     rows = []
     serial = 1
     for d in dates:
-        present_rolls = {
-            r.roll_number
+        day_records = {
+            r.roll_number: r
             for r in db.query(AttendanceRecord).filter(AttendanceRecord.attendance_date == d).all()
         }
         for s in students:
-            is_present = s.roll_number in present_rolls
+            rec = day_records.get(s.roll_number)
+            on_leave = bool(rec) and is_leave(rec)
+            is_present = bool(rec) and not on_leave
             rows.append({
                 "serial": serial,
                 "name": s.name,
                 "roll_number": s.roll_number,
                 "date": d.isoformat(),
                 "present": "Present" if is_present else "",
-                "absent": "" if is_present else "Absent",
-                "leave": "",  # No Leave records exist in the stored data; never fabricated.
+                "absent": "Absent" if (not is_present and not on_leave) else "",
+                "leave": "Leave" if on_leave else "",
             })
             serial += 1
     return rows
@@ -384,6 +409,7 @@ def export_attendance(
             "total_records": len(rows),
             "present_count": sum(1 for r in rows if r["present"]),
             "absent_count": sum(1 for r in rows if r["absent"]),
+            "leave_count": sum(1 for r in rows if r["leave"]),
         }
         pdf_bytes = build_attendance_pdf(label, summary, rows)
         return Response(
@@ -403,6 +429,108 @@ def export_attendance(
             media_type="text/csv",
             headers={"Content-Disposition": f"attachment; filename=attendance_{label}.csv"}
         )
+
+@app.post("/api/attendance/leave", dependencies=[Depends(get_api_key)])
+def mark_leave(payload: LeaveRequest, db: Session = Depends(get_db)):
+    """Marks a student as on Leave for one date (the Mark Leave option on
+    the Attendance History page).
+
+    A Leave is stored as an attendance record with verification_source
+    "LEAVE". The existing one-record-per-student-per-day unique constraint
+    means a student on leave can never also be marked Present that day
+    (and a student already Present cannot be put on Leave) — the database
+    itself enforces it.
+    """
+    leave_date = _parse_date(payload.target_date)
+    student = db.query(Student).filter(
+        Student.roll_number == payload.roll_number,
+        Student.is_active == True
+    ).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Active student not found.")
+    record = AttendanceRecord(
+        roll_number=student.roll_number,
+        student_name=student.name,
+        department=student.department,
+        attendance_date=leave_date,
+        check_in_time="—",
+        face_distance=0.0,
+        verification_source=LEAVE_SOURCE
+    )
+    try:
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"{student.name} already has a record on {leave_date.isoformat()} (Present or Leave)."
+        )
+    result = {
+        "id": record.id,
+        "roll_number": record.roll_number,
+        "student_name": record.student_name,
+        "department": record.department,
+        "attendance_date": record.attendance_date.isoformat(),
+        "check_in_time": record.check_in_time,
+        "face_distance": record.face_distance,
+        "verification_source": record.verification_source,
+    }
+    log_event(db, "INFO", "ATTENDANCE", f"Marked Leave: {student.name} ({student.roll_number}) on {leave_date.isoformat()}")
+    return result
+
+
+@app.delete("/api/attendance/leave", dependencies=[Depends(get_api_key)])
+def remove_leave(roll_number: str, target_date: str, db: Session = Depends(get_db)):
+    """Removes a Leave mark. Only Leave records can be removed here — a real
+    face-recognition check-in can never be deleted through this endpoint."""
+    leave_date = _parse_date(target_date)
+    record = db.query(AttendanceRecord).filter(
+        AttendanceRecord.roll_number == roll_number,
+        AttendanceRecord.attendance_date == leave_date
+    ).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="No record found for this student on that date.")
+    if not is_leave(record):
+        raise HTTPException(status_code=400, detail="That record is a real check-in, not a Leave mark.")
+    student_name = record.student_name
+    db.delete(record)
+    db.commit()
+    log_event(db, "WARNING", "ATTENDANCE", f"Removed Leave: {student_name} ({roll_number}) on {leave_date.isoformat()}")
+    return {"message": f"Leave removed for {student_name} on {leave_date.isoformat()}."}
+
+
+@app.get("/api/attendance/monthly-register", dependencies=[Depends(get_api_key)])
+def download_monthly_register(
+    month: str,
+    format: Literal["xlsx", "pdf"] = Query("xlsx"),
+    db: Session = Depends(get_db)
+):
+    """Monthly Attendance Register download (Excel / PDF — identical layout):
+    one row per student, one column per day of the month (P / A / L / —),
+    per-student P / A / L / % totals, and a monthly summary strip."""
+    try:
+        year_str, month_str = month.split("-")
+        year, month_num = int(year_str), int(month_str)
+        if not (1 <= month_num <= 12):
+            raise ValueError
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail="month must be YYYY-MM, e.g. 2026-11.")
+
+    data = build_monthly_register(db, year, month_num)
+    if format == "xlsx":
+        content = build_monthly_register_excel(data)
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    else:
+        content = build_monthly_register_pdf(data)
+        media_type = "application/pdf"
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename=monthly_attendance_register_{month}.{format}"}
+    )
+
 
 @app.get("/api/system/logs", dependencies=[Depends(get_api_key)])
 def get_system_logs(db: Session = Depends(get_db)):

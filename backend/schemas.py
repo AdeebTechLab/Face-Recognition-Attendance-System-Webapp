@@ -29,3 +29,7 @@ class ManualAttendanceRequest(BaseModel):
     roll_number: str
     face_distance: float
     verification_token: str
+
+class LeaveRequest(BaseModel):
+    roll_number: str
+    target_date: str  # YYYY-MM-DD — the day the student is on leave

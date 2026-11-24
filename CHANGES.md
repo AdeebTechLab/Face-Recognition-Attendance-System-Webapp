@@ -55,3 +55,52 @@ are untouched.
   mark, and the dashboard daily-report/students endpoints unchanged.
 - Frontend: `tsc --noEmit` clean and `npm run build` succeeds; all existing routes
   build (`/reports` intentionally removed per Change 1).
+
+---
+
+# Update 2 — Monthly Attendance Register + Leave Option
+
+## Change 4 — Monthly Attendance Register download (Excel + PDF, same layout)
+- The **Download** button on Attendance History now offers a **Monthly Register**
+  for the month chosen in the new month picker next to it — in **Excel and PDF
+  with an identical layout**, matching the Monthly Attendance Register format:
+  - Title "ATTENDX \u2022 MONTHLY ATTENDANCE REGISTER" and subtitle
+    "Class: <department> | Month: <Month Year> | Academic Session <YYYY-YY>".
+  - Summary strip: Total Students, Working Days, Present, Absent, Leave, Overall %.
+  - Legend: P Present \u00b7 A Absent \u00b7 L Leave \u00b7 \u2014 Holiday / No Class.
+  - One row per student: #, Student Name, Roll No., one cell per day of the month,
+    then per-student totals P / A / L / %.
+  - Signature block (Teacher / Coordinator Signature, Date, Remarks) and footer.
+- Register rules (real stored data only): a "class day" is a day with at least one
+  stored record that month. On a class day a student is P (check-in), L (Leave
+  record) or A (no record); other days show \u2014. Working Days = number of class
+  days. Percentage = P / (P + A); Leave days are excluded from the percentage.
+- New backend module `backend/monthly_register.py` builds the register data once;
+  `build_monthly_register_excel` (excel_generator.py) and
+  `build_monthly_register_pdf` (pdf_generator.py) render it, served by
+  `GET /api/attendance/monthly-register?month=YYYY-MM&format=xlsx|pdf`.
+- The previous detailed download is unchanged, listed in the same menu as
+  "Detailed List \u2014 Excel / PDF".
+
+## Change 5 — Leave option in the online app
+- Attendance History has a **Mark Leave** card: select a student, pick a date,
+  click Mark Leave. Leave rows appear in the history table with an amber
+  **Leave** badge and a **Remove Leave** action.
+- Backend: `POST /api/attendance/leave` and `DELETE /api/attendance/leave`.
+  A Leave is stored as an attendance record with `verification_source = "LEAVE"`
+  \u2014 **no database schema change**, so existing databases keep working.
+  The existing one-record-per-student-per-day rule now also guarantees a student
+  cannot be both Present and on Leave on the same day.
+- Leave is respected everywhere: the daily report and dashboard count Leave
+  separately (a student on leave is not Absent), the detailed export's Leave
+  column now shows real Leave data, the Monthly Register shows L, and Live
+  Attendance answers `ON_LEAVE` (student shown once with status Leave, never
+  marked present). The dashboard's Recent Live Check-Ins feed excludes Leave
+  records, since they are not check-ins.
+
+## Files changed in Update 2
+- Backend: `main.py`, `schemas.py` (LeaveRequest), `excel_generator.py`,
+  `pdf_generator.py` \u2014 new file: `monthly_register.py`.
+- Frontend: `src/app/attendance/page.tsx`, `src/app/live/page.tsx`,
+  `src/app/page.tsx` (dashboard feed filter).
+- Untouched: `models.py`, `database.py`, `vision_engine.py`, `security.py`.

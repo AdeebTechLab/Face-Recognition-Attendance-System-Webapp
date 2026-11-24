@@ -20,7 +20,8 @@ export default function DashboardPage() {
       .then(([rep, mod, att]) => {
         setReport(rep);
         setModelStatus(mod.active_model);
-        setRecentLogs(att.slice(0, 6));
+        // Leave records are not check-ins — keep them out of the live feed.
+        setRecentLogs(att.filter((a: any) => a.verification_source !== "LEAVE").slice(0, 6));
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));

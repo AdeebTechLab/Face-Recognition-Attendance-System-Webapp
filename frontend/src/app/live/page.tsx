@@ -150,6 +150,20 @@ export default function LiveRecognitionPage() {
                   // prevented by the backend and the status message is shown.
                 }
               }
+            } else if (d.attendance_event === "ON_LEAVE") {
+              // The student has a Leave record today: never mark present,
+              // show them once in the results with status Leave.
+              setStatusMsg(d.message || `${d.name} is on leave today.`);
+              if (!handledRollsRef.current.has(d.roll_number)) {
+                handledRollsRef.current.add(d.roll_number);
+                upsertResult({
+                  name: d.name,
+                  roll_number: d.roll_number,
+                  status: "Leave",
+                  date: new Date().toLocaleDateString("en-CA"),
+                  time: "—",
+                });
+              }
             }
           }
         } catch (err: any) {
@@ -246,7 +260,7 @@ export default function LiveRecognitionPage() {
                   <td className="p-4 font-medium text-slate-900">{r.name}</td>
                   <td className="p-4 font-mono font-semibold">{r.roll_number}</td>
                   <td className="p-4">
-                    <span className="text-xs font-bold px-2 py-0.5 rounded bg-emerald-600 text-white">{r.status}</span>
+                    <span className={`text-xs font-bold px-2 py-0.5 rounded text-white ${r.status === "Leave" ? "bg-amber-500" : "bg-emerald-600"}`}>{r.status}</span>
                   </td>
                   <td className="p-4">{r.date}</td>
                   <td className="p-4">{r.time}</td>
@@ -268,7 +282,7 @@ export default function LiveRecognitionPage() {
             <div className="p-4 rounded-xl border bg-emerald-50/60 border-emerald-200 space-y-1.5">
               <p className="text-sm text-slate-600">Name: <strong className="text-slate-900">{lastDetected.name}</strong></p>
               <p className="text-sm text-slate-600">Roll Number: <strong className="text-slate-900">{lastDetected.roll_number}</strong></p>
-              <p className="text-sm text-slate-600">Status: <strong className="text-emerald-700">{lastDetected.status}</strong></p>
+              <p className="text-sm text-slate-600">Status: <strong className={lastDetected.status === "Leave" ? "text-amber-600" : "text-emerald-700"}>{lastDetected.status}</strong></p>
               <p className="text-sm text-slate-600">Date: <strong className="text-slate-900">{lastDetected.date}</strong></p>
               <p className="text-sm text-slate-600">Time: <strong className="text-slate-900">{lastDetected.time}</strong></p>
               <p className="pt-1 text-xs font-medium text-indigo-700 flex items-center gap-1.5">
