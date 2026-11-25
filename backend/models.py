@@ -1,55 +1,49 @@
-from datetime import datetime, date
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Date, Float, UniqueConstraint
-from database import Base
+"""
+AttendX - MongoDB document shapes and serializers.
 
-class Student(Base):
-    __tablename__ = "students"
+There are no ORM classes any more. A "model" is now just a plain dict stored
+in a collection. These helpers convert a stored document into exactly the
+JSON shape the old SQLAlchemy models produced, so the frontend does not
+need to change:
 
-    id = Column(Integer, primary_key=True, index=True)
-    roll_number = Column(String(50), unique=True, index=True, nullable=False)
-    name = Column(String(120), nullable=False)
-    email = Column(String(150), unique=True, nullable=False)
-    department = Column(String(100), nullable=False)
-    is_active = Column(Boolean, default=True, nullable=False)  # Soft delete preserves history
-    photo_count = Column(Integer, default=0, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+  - Mongo `_id` (ObjectId)  ->  `id` as a string
+    (was an integer before - see MIGRATION_NOTES.md)
+  - attendance_date is stored as an ISO string "YYYY-MM-DD"
+    (was a SQL Date, serialised to the same string)
+  - created_at / trained_at stay as datetimes, which FastAPI
+    serialises to ISO strings just like before.
+"""
+from bson import ObjectId
+from bson.errors import InvalidId
 
-class AttendanceRecord(Base):
-    __tablename__ = "attendance_records"
 
-    id = Column(Integer, primary_key=True, index=True)
-    roll_number = Column(String(50), index=True, nullable=False)
-    student_name = Column(String(120), nullable=False)
-    department = Column(String(100), nullable=False)
-    attendance_date = Column(Date, default=date.today, index=True, nullable=False)
-    check_in_time = Column(String(20), nullable=False)
-    face_distance = Column(Float, nullable=False)
-    verification_source = Column(String(50), default="LIVE_WEBCAM", nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+def to_object_id(value):
+    """Return an ObjectId for a string id, or None if it isn't a valid one."""
+    try:
+        return ObjectId(str(value))
+    except (InvalidId, TypeError, ValueError):
+        return None
 
-    # Database-level duplicate prevention: strictly 1 attendance record per student per day
-    __table_args__ = (
-        UniqueConstraint("roll_number", "attendance_date", name="uq_student_daily_attendance"),
-    )
 
-class ModelVersion(Base):
-    __tablename__ = "model_versions"
+def _base(doc):
+    if doc is None:
+        return None
+    out = dict(doc)
+    out["id"] = str(out.pop("_id"))
+    return out
 
-    id = Column(Integer, primary_key=True, index=True)
-    version_tag = Column(String(50), unique=True, nullable=False)
-    students_count = Column(Integer, nullable=False)
-    encodings_count = Column(Integer, nullable=False)
-    validation_accuracy = Column(Float, nullable=False)
-    tolerance_used = Column(Float, nullable=False)
-    artifact_path = Column(String(255), nullable=False)
-    is_active = Column(Boolean, default=True)
-    trained_at = Column(DateTime, default=datetime.utcnow)
 
-class SystemLog(Base):
-    __tablename__ = "system_logs"
+def serialize_student(doc):
+    return _base(doc)
 
-    id = Column(Integer, primary_key=True, index=True)
-    level = Column(String(20), nullable=False)  # INFO, WARNING, ERROR
-    module = Column(String(50), nullable=False)
-    message = Column(String(500), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+
+def serialize_attendance(doc):
+    return _base(doc)
+
+
+def serialize_model_version(doc):
+    return _base(doc)
+
+
+def serialize_log(doc):
+    return _base(doc)

@@ -1,34 +1,28 @@
-"""Monthly Attendance Register data builder.
+"""Monthly Attendance Register data builder - MongoDB (PyMongo) version.
 
-Builds the data behind the Monthly Attendance Register download (Excel and
-PDF share this exact structure, so both files always agree).
-
-Rules (all values come from real stored records — nothing is invented):
+Rules unchanged from the SQL version:
 - A "class day" is a day in the month that has at least one stored
   attendance record (Present or Leave) for an active student.
-- On a class day, each active student is:
-    "P" — they have a check-in record that day,
-    "L" — they have a Leave record that day (verification_source == "LEAVE"),
-    "A" — they have no record that day.
+- On a class day, each active student is P / L / A as per their record.
 - On any other day the cell is "—" (Holiday / No Class).
-- Working Days = number of class days in the month.
-- A student's percentage = P / (P + A) * 100 (Leave days are excluded,
-  the standard register convention).
+- A student's percentage = P / (P + A) * 100 (Leave excluded).
+
+Only the data access changed: students / records are now plain dicts from
+PyMongo, and attendance_date is stored as a "YYYY-MM-DD" string.
 """
 import calendar
 from datetime import date
 
-from models import Student, AttendanceRecord
+from database import students_col, attendance_col
 
 LEAVE_SOURCE = "LEAVE"
 
 
 def is_leave(record) -> bool:
-    """A Leave is stored as an attendance record whose verification_source
-    is "LEAVE" (check_in_time "—", face_distance 0.0). The table's unique
-    (roll_number, attendance_date) constraint guarantees a student can never
-    be both Present and on Leave on the same day."""
-    return record.verification_source == LEAVE_SOURCE
+    """Works for both dict records (Mongo) and old attribute-style records."""
+    if isinstance(record, dict):
+        return record.get("verification_source") == LEAVE_SOURCE
+    return getattr(record, "verification_source", None) == LEAVE_SOURCE
 
 
 def _clean_pct(p: int, a: int):
@@ -39,34 +33,32 @@ def _clean_pct(p: int, a: int):
 
 
 def build_monthly_register(db, year: int, month: int) -> dict:
+    # `db` is the PyMongo database, kept in the signature so main.py's
+    # call site is unchanged from the SQL version.
     days_in_month = calendar.monthrange(year, month)[1]
     first = date(year, month, 1)
     last = date(year, month, days_in_month)
 
-    students = (
-        db.query(Student)
-        .filter(Student.is_active == True)
-        .order_by(Student.roll_number.asc())
-        .all()
+    students = list(
+        students_col.find({"is_active": True}).sort("roll_number", 1)
     )
-    active_rolls = {s.roll_number for s in students}
+    active_rolls = {s["roll_number"] for s in students}
 
-    records = (
-        db.query(AttendanceRecord)
-        .filter(
-            AttendanceRecord.attendance_date >= first,
-            AttendanceRecord.attendance_date <= last,
+    # attendance_date is an ISO string, so a string range query is a date range.
+    records = list(
+        attendance_col.find(
+            {"attendance_date": {"$gte": first.isoformat(), "$lte": last.isoformat()}}
         )
-        .all()
     )
 
     marks = {}  # (roll_number, day) -> "P" | "L"
     class_days = set()
     for r in records:
-        if r.roll_number not in active_rolls:
-            continue  # Deactivated students never distort the register
-        marks[(r.roll_number, r.attendance_date.day)] = "L" if is_leave(r) else "P"
-        class_days.add(r.attendance_date.day)
+        if r["roll_number"] not in active_rolls:
+            continue
+        day = date.fromisoformat(r["attendance_date"]).day
+        marks[(r["roll_number"], day)] = "L" if is_leave(r) else "P"
+        class_days.add(day)
 
     rows = []
     total_p = total_a = total_l = 0
@@ -77,7 +69,7 @@ def build_monthly_register(db, year: int, month: int) -> dict:
             if d not in class_days:
                 cells.append("—")
                 continue
-            mark = marks.get((s.roll_number, d))
+            mark = marks.get((s["roll_number"], d))
             if mark == "P":
                 cells.append("P")
                 p += 1
@@ -89,8 +81,8 @@ def build_monthly_register(db, year: int, month: int) -> dict:
                 a += 1
         rows.append({
             "serial": idx,
-            "name": s.name,
-            "roll_number": s.roll_number,
+            "name": s["name"],
+            "roll_number": s["roll_number"],
             "cells": cells,
             "present": p,
             "absent": a,
@@ -101,9 +93,8 @@ def build_monthly_register(db, year: int, month: int) -> dict:
         total_a += a
         total_l += l
 
-    departments = {s.department for s in students}
+    departments = {s["department"] for s in students}
     class_label = departments.pop() if len(departments) == 1 else "All Classes"
-    # Academic session runs August -> July (e.g. Nov 2026 and Jan 2027 are both 2026-27)
     session = f"{year}-{str(year + 1)[2:]}" if month >= 8 else f"{year - 1}-{str(year)[2:]}"
 
     return {
