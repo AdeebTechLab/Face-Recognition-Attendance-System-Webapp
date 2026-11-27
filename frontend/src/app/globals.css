@@ -1,3 +1,41 @@
-@tailwind base;
+﻿@tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ---------- AttendX responsive foundation ---------- */
+
+/* Never let the whole page scroll sideways on a phone */
+html,
+body {
+  overflow-x: hidden;
+}
+
+/* Media always fits its box: images, camera video, canvases */
+img,
+video,
+canvas,
+svg {
+  max-width: 100%;
+}
+
+/* Class-based heights (e.g. h-full in camera boxes) still win over this */
+video {
+  height: auto;
+}
+
+/* Form controls never overflow their container */
+input,
+select,
+textarea {
+  max-width: 100%;
+}
+
+/* Smooth momentum scrolling inside sideways-scroll boxes (tables) */
+.overflow-x-auto {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* No grey flash when tapping buttons/links on mobile */
+* {
+  -webkit-tap-highlight-color: transparent;
+}

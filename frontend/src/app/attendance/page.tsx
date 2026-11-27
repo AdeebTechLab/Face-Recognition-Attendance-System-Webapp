@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 import { useEffect, useState } from "react";
 import { apiFetch, apiDownload } from "@/lib/api";
 import { useToast } from "@/components/ToastProvider";
@@ -144,7 +144,7 @@ export default function AttendanceHistoryPage() {
             {menuOpen && (
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
-                <div className="absolute right-0 z-20 mt-2 w-72 bg-white rounded-xl border border-slate-200 shadow-lg overflow-hidden">
+                <div className="absolute right-0 z-20 mt-2 w-72 max-w-[calc(100vw-2rem)] bg-white rounded-xl border border-slate-200 shadow-lg overflow-hidden">
                   <div className="px-4 pt-3 pb-1 text-[11px] font-bold uppercase tracking-wide text-slate-400">
                     Monthly Register — {month}
                   </div>
@@ -214,11 +214,11 @@ export default function AttendanceHistoryPage() {
 
       {error && <div className="p-4 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-sm">{error}</div>}
 
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-x-auto">
         <div className="p-5 border-b border-slate-100 font-semibold text-slate-900 flex items-center gap-2">
           <History className="w-4 h-4 text-indigo-600" /> {records.length} records
         </div>
-        <table className="w-full text-sm text-left">
+        <table className="w-full min-w-[640px] text-sm text-left">
           <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
             <tr><th className="p-4">Date</th><th className="p-4">Status</th><th className="p-4">Time</th><th className="p-4">Roll</th><th className="p-4">Name</th><th className="p-4">Department</th><th className="p-4">Distance</th><th className="p-4">Action</th></tr>
           </thead>

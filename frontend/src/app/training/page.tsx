@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 import { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { Cpu, Play, CheckCircle2 } from "lucide-react";
@@ -51,11 +51,11 @@ export default function TrainingPage() {
           onChange={(e) => setTolerance(parseFloat(e.target.value))} className="w-full max-w-md accent-indigo-600 block" />
       </div>
 
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-x-auto">
         <div className="p-5 border-b border-slate-100 font-semibold text-slate-900 flex items-center gap-2">
           <Cpu className="w-4 h-4 text-indigo-600" /> Model Version History
         </div>
-        <table className="w-full text-sm text-left">
+        <table className="w-full min-w-[640px] text-sm text-left">
           <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
             <tr>
               <th className="p-4">Version</th>

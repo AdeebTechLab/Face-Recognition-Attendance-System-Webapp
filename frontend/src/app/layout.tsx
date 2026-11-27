@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+﻿import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import Sidebar from "@/components/Sidebar";
@@ -18,7 +18,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className={`${inter.className} bg-slate-50 text-slate-900 antialiased flex min-h-screen`}>
         <ToastProvider>
           <Sidebar />
-          <main className="flex-1 p-6 md:p-8 overflow-y-auto max-w-7xl mx-auto w-full">
+          <main className="flex-1 min-w-0 p-4 pt-20 md:p-8 overflow-y-auto max-w-7xl mx-auto w-full">
             {children}
           </main>
         </ToastProvider>
